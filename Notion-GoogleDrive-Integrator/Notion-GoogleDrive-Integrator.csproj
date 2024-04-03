@@ -6,13 +6,20 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>Notion_GoogleDrive_Integrator</RootNamespace>
+    <UserSecretsId>105132bb-d90d-492f-93ad-5c1697b6c256</UserSecretsId>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Azure.Storage.Files.Shares" Version="12.17.1" />
+    <PackageReference Include="Google.Apis.Drive.v3" Version="1.67.0.3309" />
+    <PackageReference Include="Google.Apis.Iam.v1" Version="1.67.0.3360" />
     <PackageReference Include="Microsoft.Azure.Functions.Worker" Version="1.20.0" />
     <PackageReference Include="Microsoft.Azure.Functions.Worker.Extensions.Timer" Version="4.1.0" />
     <PackageReference Include="Microsoft.Azure.Functions.Worker.Sdk" Version="1.16.2" />
     <PackageReference Include="Microsoft.ApplicationInsights.WorkerService" Version="2.21.0" />
     <PackageReference Include="Microsoft.Azure.Functions.Worker.ApplicationInsights" Version="1.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="6.0.1" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Notion.Net" Version="4.2.0" />
   </ItemGroup>
   <ItemGroup>
     <None Update="host.json">
