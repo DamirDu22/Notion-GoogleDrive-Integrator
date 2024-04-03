@@ -2,18 +2,13 @@ using System.Text;
 using Notion.Client;
 using Newtonsoft.Json;
 using Google.Apis.Drive.v3;
-using Google.Apis.Services;
-using Google.Apis.Auth.OAuth2;
 using Microsoft.Extensions.Logging;
 using Microsoft.Azure.Functions.Worker;
 using Notion_GoogleDrive_Integrator.Services;
 using Notion_GoogleDrive_Integrator.Services.Exstensions;
 using Microsoft.Extensions.Configuration;
 using Google.Apis.Upload;
-using System.Threading;
 using static System.Runtime.InteropServices.JavaScript.JSType;
-using System.Timers;
-using Google.Protobuf.WellKnownTypes;
 
 namespace Notion_GoogleDrive_Integrator
 {
@@ -43,7 +38,7 @@ namespace Notion_GoogleDrive_Integrator
         }
 
         [Function("GetNotionPage")]
-        public async Task Run([TimerTrigger("0 0 0/24 * * *")] TimerInfo myTimer)
+        public async Task Run([TimerTrigger("0 0  * * *")] TimerInfo myTimer)
         {
             _logger.LogInformation($"C# Timer trigger function executed at: {DateTime.Now}");
             Console.WriteLine($"C# Timer trigger function executed at: {DateTime.Now}");
@@ -55,8 +50,12 @@ namespace Notion_GoogleDrive_Integrator
 
             try
             {
+                var logString = new StringBuilder();
+                
                 var lastRan = GetLastRanDate(myTimer);
-
+                
+                logString.AppendLine($"Function last ran at: {lastRan}");
+                
                 List<Task<PaginatedList<IBlock>>> tasks = new List<Task<PaginatedList<IBlock>>>();
                 List<IBlock> childBlocks = new List<IBlock>();
                 List<Task<IUploadProgress>> uploads = new List<Task<IUploadProgress>>();
@@ -64,14 +63,17 @@ namespace Notion_GoogleDrive_Integrator
                 var blocks = await _notionClient.Blocks.RetrieveChildrenAsync(_configuration.GetValue<string>("notion:ResourcesPageId"));
                 foreach (var block in blocks.Results)
                 {
+                    logString.AppendLine($"Log {block.Id} last edited: {block.LastEditedTime.ToString()}");
                     if(DateTime.Compare(block.LastEditedTime, lastRan) >= 0)
                     {
                         tasks.Add(_notionClient.Blocks.RetrieveChildrenAsync(block.Id));
                     }
                 }
 
-                await Task.WhenAll(tasks);
+                _logger.LogInformation(logString.ToString());
 
+                await Task.WhenAll(tasks);
+                
                 foreach (var task in tasks)
                 {
                     var blocksResponse = await task.ConfigureAwait(false);
@@ -122,7 +124,7 @@ namespace Notion_GoogleDrive_Integrator
             catch (Exception ex)
             {
                 var exceptionString = JsonConvert.SerializeObject(ex);
-                Console.WriteLine(exceptionString);
+                _logger.LogError(ex, exceptionString);
                 //await _fileService.WriteToFileAsync(exceptionString, $"Exception{DateTime.Now.Year}_{DateTime.Now.Month}_{DateTime.Now.Day}");
             }
         }
