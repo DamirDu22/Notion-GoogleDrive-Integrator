@@ -52,7 +52,7 @@ namespace Notion_GoogleDrive_Integrator
         }
 
         [Function("GetNotionPage")]
-        public async Task Run([TimerTrigger("0 0 0/24 * *")] TimerInfo myTimer)
+        public async Task Run([TimerTrigger("0 0 0/24 * * *")] TimerInfo myTimer)
         {
             _logger.LogInformation($"C# Timer trigger function executed at: {DateTime.Now}");
             Console.WriteLine($"C# Timer trigger function executed at: {DateTime.Now}");
