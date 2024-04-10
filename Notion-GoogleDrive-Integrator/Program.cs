@@ -16,6 +16,7 @@ var hostBuilder = new HostBuilder()
     {
         services.AddApplicationInsightsTelemetryWorkerService();
         services.ConfigureFunctionsApplicationInsights();
+        services.AddMemoryCache();
     });
     //.ConfigureAppConfiguration(configuration =>
     //{

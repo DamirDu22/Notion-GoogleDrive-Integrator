@@ -9,6 +9,8 @@
     <UserSecretsId>105132bb-d90d-492f-93ad-5c1697b6c256</UserSecretsId>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Azure.Data.Tables" Version="12.8.3" />
+    <PackageReference Include="Azure.Identity" Version="1.11.0" />
     <PackageReference Include="Azure.Storage.Files.Shares" Version="12.17.1" />
     <PackageReference Include="Google.Apis.Drive.v3" Version="1.67.0.3309" />
     <PackageReference Include="Google.Apis.Iam.v1" Version="1.67.0.3360" />
