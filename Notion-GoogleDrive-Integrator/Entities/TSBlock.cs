@@ -8,6 +8,9 @@ using System.Threading.Tasks;
 
 namespace Notion_GoogleDrive_Integrator.Entities
 {
+    /// <summary>
+    /// Object representing Notion block stored in table storage.
+    /// </summary>
     public class TSBlock: ITableEntity
     {
         public string RowKey { get; set; } = default!;

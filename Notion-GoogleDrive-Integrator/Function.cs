@@ -12,6 +12,10 @@ using static System.Runtime.InteropServices.JavaScript.JSType;
 using Notion_GoogleDrive_Integrator.Entities;
 using Azure.Data.Tables;
 using Microsoft.Extensions.Caching.Memory;
+using System.Collections.Concurrent;
+using Google.Apis.Drive.v3.Data;
+using System.Reflection.Metadata.Ecma335;
+using System.Collections.Generic;
 
 namespace Notion_GoogleDrive_Integrator
 {
@@ -64,28 +68,25 @@ namespace Notion_GoogleDrive_Integrator
 
             try
             {
+                var blocksPartitionKey = _configuration.GetValue<string>("storageAccount:blocksTablePartitionKey");
+
                 var logString = new StringBuilder();
                 
-                List<Task<PaginatedList<IBlock>>> tasks = new List<Task<PaginatedList<IBlock>>>();
-                List<IBlock> childBlocks = new List<IBlock>();
+                
                 List<Task<IUploadProgress>> uploads = new List<Task<IUploadProgress>>();
 
-                var blocks = await _notionClient.Blocks.RetrieveChildrenAsync(_configuration.GetValue<string>("notion:ResourcesPageId"));
+                var notionBlocks = await _notionClient.Blocks.RetrieveChildrenAsync(_configuration.GetValue<string>("notion:ResourcesPageId"));
 
                 //Get blocks from table storage
-                var tsBlocks = GetBlocksFromTableStorage();
+                var tableStorageBlocks = _tableClient.Query<TSBlock>(x => x.PartitionKey == blocksPartitionKey).ToList();
 
-                //get modified blocks
-                var modifiedBlocks = GetModifiedTSBlocks(tsBlocks, blocks.Results);
+                IEnumerable<TSBlock?> modifiedBlocks = GetModifiedTableStorageBlocks(tableStorageBlocks, notionBlocks.Results);
+                IEnumerable<TSBlock?> newBlocks = GetNewTableStorageBlocks(tableStorageBlocks, notionBlocks.Results, blocksPartitionKey);
+                IEnumerable<TSBlock?> blocksToProcess = modifiedBlocks.Concat(newBlocks);
 
-                //get new blocks
-                var newBlocks = GetNewTSBlocks(tsBlocks.ToList(), blocks.Results);
-
-                var allBlocks = new List<TSBlock>();
-                allBlocks.AddRange(modifiedBlocks);
-                allBlocks.AddRange(newBlocks);
-
-                foreach (var block in allBlocks)
+                List<Task<PaginatedList<IBlock>>> tasks = new List<Task<PaginatedList<IBlock>>>();
+                List<IBlock> childBlocks = new List<IBlock>();
+                foreach (var block in blocksToProcess)
                 {
                     logString.AppendLine($"Log {block.BlockId} last edited: {block.EditDate.ToString()}");
                     tasks.Add(_notionClient.Blocks.RetrieveChildrenAsync(block.BlockId));
@@ -104,136 +105,158 @@ namespace Notion_GoogleDrive_Integrator
                     childBlocks.AddRange(blocksResponse.Results);
                 }
 
-                var blockGroups = childBlocks.GroupBy(bl => ((PageParent)bl.Parent).PageId);
+                var blockGroupsByParentId = childBlocks.GroupBy(cb => ((PageParent)cb.Parent).PageId);
 
-                foreach (var blockGroup in blockGroups)
+                foreach (var blockGroup in blockGroupsByParentId)
                 {
-                    var parent = blocks.Results.Find(x => x.Id == blockGroup.Key);
-                    var parentName = string.Empty;
-                    var sb = new StringBuilder();
+                    var parent = notionBlocks.Results.Find(x => x.Id == blockGroup.Key);
+                    var parentName = ((ChildPageBlock?)parent)?.ChildPage?.Title;
+                    if (string.IsNullOrEmpty(parentName))
+                    {
+                        continue;
+                    }
+
+                    var pageContent = new StringBuilder();
 
                     foreach (var block in blockGroup)
                     {
-                        var textValue = block.GetText();
+                        var textValue = GetText(block);
 
                         if (string.IsNullOrWhiteSpace(textValue))
                         {
                             continue;
                         }
 
-                        sb.AppendLine(textValue);
+                        pageContent.AppendLine(textValue);
                     }
 
-                    if (parent != null)
-                    {
-                        parentName = ((ChildPageBlock)parent)?.ChildPage.Title;
-                    }
+                    var fileName = $"{parentName}.txt";
 
-                    var fileName = !string.IsNullOrEmpty(parentName) ? parentName + ".txt" : $"Orphan{DateTime.Now.ToShortDateString()}.txt";
+                    var searchrequest = _googleClient.Files.List();
+                    searchrequest.Q = $"name:'{fileName}'";
+                    FileList existingFiles = await searchrequest.ExecuteAsync();
 
+                    var filesDeleted = await DeleteFileIfExists(existingFiles.Files);
+                    //do we need to retry failed deletions?
 
-                    await DeleteFileIfExists(fileName);
-                    
-                    var file = CreateFile(fileName);
-                    byte[] byteArray = Encoding.UTF8.GetBytes(sb.ToString());
+                    var googleFolderIds = new List<string> { _configuration.GetValue<string>("google:drive:folderId") };
+
+                    var file = CreateFile(fileName, googleFolderIds);
+
+                    byte[] byteArray = Encoding.UTF8.GetBytes(pageContent.ToString());
 
                     using (MemoryStream stream = new MemoryStream(byteArray))
                     {
                         var request = _googleClient.Files.Create(file, stream, "text/plain");
                         var res = await request.UploadAsync();
                     }
-                    //await _fileService.WriteToFileAsync(sb.ToString(), !string.IsNullOrEmpty(parentName) ? parentName : "Orphan");
                 }
 
-                //update/insert into table storage
-                await UpdateBlocksInTableStorage(modifiedBlocks);
-                await SaveBlocksToTableStorage(newBlocks);
+                //insert/update to table storage
+                var modifyResponses = await UpdateBlocksInTableStorageNew(modifiedBlocks!);
+                var saveResponses = await SaveBlocksToTableStorage(newBlocks!);
+
+                //TODO: handle failed requests to table storage
 
             }
             catch (Exception ex)
             {
                 var exceptionString = JsonConvert.SerializeObject(ex);
                 _logger.LogError(ex, exceptionString);
-                //await _fileService.WriteToFileAsync(exceptionString, $"Exception{DateTime.Now.Year}_{DateTime.Now.Month}_{DateTime.Now.Day}");
             }
         }
 
-        private async Task DeleteFileIfExists(string fileName)
+        /// <summary>
+        /// Delete files from google drive that match search by Name
+        /// </summary>
+        /// <param name="fileName"></param>
+        /// <returns></returns>
+        /// <remarks></remarks>
+        private async Task<int> DeleteFileIfExists(IList<Google.Apis.Drive.v3.Data.File> existingFiles)
         {
-            try
+            int count = 0;
+            if (!existingFiles.Any())
             {
-                var searchrequest = _googleClient.Files.List();
-                searchrequest.Q = $"name:'{fileName}'";
-                var existingFiles = await searchrequest.ExecuteAsync();
-                List<Task<string>> tasks = new List<Task<string>>();
-                if (existingFiles.Files.Any())
-                {
-                    foreach (var file in existingFiles.Files)
-                    {
-                        var deleteRequest = _googleClient.Files.Delete(file.Id);
-                        tasks.Add(deleteRequest.ExecuteAsync());
-                    }
-                }
+                return count;
+            }
 
-                await Task.WhenAll(tasks);
-            }
-            catch (Exception)
+            List<Task<string>> tasks = new List<Task<string>>();
+            foreach (var file in existingFiles)
             {
-                throw;
+                var deleteRequest = _googleClient.Files.Delete(file.Id);
+                tasks.Add(deleteRequest.ExecuteAsync());
             }
+
+            await Task.WhenAll(tasks);
+
+            foreach(var task in tasks)
+            {
+                bool taskCompleted = task.IsCompletedSuccessfully;
+                if (taskCompleted)
+                {
+                    count++;
+                }
+            }
+
+            return count;
         }
 
-
-        private Google.Apis.Drive.v3.Data.File CreateFile(string fileName)
+        /// <summary>
+        /// Build file for Google drive
+        /// </summary>
+        /// <param name="fileName"></param>
+        /// <param name="partents"></param>
+        /// <param name="mimeType"></param>
+        /// <returns></returns>
+        private Google.Apis.Drive.v3.Data.File CreateFile(string fileName, List<string> partents, string mimeType = "text/plain")
         {
             var file = new Google.Apis.Drive.v3.Data.File()
             {
                 Name = fileName,
-                MimeType = "text/plain",
-                Parents = new List<string> { _configuration.GetValue<string>("storageAccount:folderId") }
+                MimeType = mimeType,
+                Parents = partents
             };
 
             return file;
         }
 
-        private IEnumerable<TSBlock> GetBlocksFromTableStorage()
+        /// <summary>
+        /// Add new Notion block metadata to table storage
+        /// </summary>
+        /// <param name="blocks"></param>
+        /// <returns></returns>
+        /// <remarks>TODO: this shold not depend on TSBlock but on DTO</remarks>
+        private async Task<List<Azure.Response>> SaveBlocksToTableStorage(IEnumerable<TSBlock> blocks)
         {
-            var key = _configuration.GetValue<string>("storageAccount:blocksTablePartitionKey");
-            var notionBlocks = _tableClient.Query<TSBlock>(x => x.PartitionKey == key).ToList();
-            return notionBlocks;
-        }
-
-        private IEnumerable<TSBlock> GetBlocksFromTableStorageWithCache()
-        {
-            var key = _configuration.GetValue<string>("storageAccount:blocksTablePartitionKey");
-            List<TSBlock> notionBlocks = new List<TSBlock>();
-            notionBlocks = _cache.Get<List<TSBlock>>(key);
-
-            if(notionBlocks == null || !notionBlocks.Any()) 
-            { 
-                notionBlocks = _tableClient.Query<TSBlock>(x => x.PartitionKey == key).ToList();
-                _cache.Set(key, notionBlocks, new DateTimeOffset(DateTime.Now.AddDays(1)));
-            }
-
-            return notionBlocks;
-        }
-
-        private async Task SaveBlocksToTableStorage(IEnumerable<TSBlock> blocks)
-        {
-            if (blocks == null || !blocks.Any()) return;
+            if (blocks == null || !blocks.Any()) return new List<Azure.Response>();
 
             List<Task<Azure.Response>> tasks = new List<Task<Azure.Response>>();
-            foreach(var item in blocks)
+            List<TSBlock> failedSaves = new List<TSBlock>();
+            foreach (var item in blocks)
             {
                 tasks.Add(_tableClient.AddEntityAsync<TSBlock>(item));
             }
 
             await Task.WhenAll(tasks);
+
+            List<Azure.Response> responses = new List<Azure.Response>();
+            foreach (var task in tasks)
+            {
+                responses.Add(await task);
+            }
+
+            return responses;
         }
 
-        private async Task UpdateBlocksInTableStorage(IEnumerable<TSBlock> blocks)
+        /// <summary>
+        /// Update Notion block metadata in table storage
+        /// </summary>
+        /// <param name="blocks"></param>
+        /// <returns></returns>
+        /// <remarks>TODO: this shold not depend on TSBlock but on DTO</remarks>
+        private async Task<List<Azure.Response>> UpdateBlocksInTableStorageNew(IEnumerable<TSBlock> blocks)
         {
-            if(blocks == null || !blocks.Any()) return;
+            if (blocks == null || !blocks.Any()) return new List<Azure.Response>();
 
             List<Task<Azure.Response>> tasks = new List<Task<Azure.Response>>();
             foreach (var item in blocks)
@@ -242,25 +265,22 @@ namespace Notion_GoogleDrive_Integrator
             }
 
             await Task.WhenAll(tasks);
-        }
 
-        private IEnumerable<IBlock> GetModifiedBlocks(IEnumerable<TSBlock> tsBlocks, List<IBlock> blocks)
-        {
-            List<IBlock> modifiedBlocks = new List<IBlock>();
-
-            foreach (var item in blocks)
+            List < Azure.Response > responses = new List<Azure.Response>();
+            foreach (var task in tasks)
             {
-                var modified = tsBlocks.Any(tsb => tsb.BlockId == item.Id && tsb.EditDate > item.LastEditedTime);
-                if (modified)
-                {
-                    modifiedBlocks.Add(item);
-                }
+                responses.Add(await task);
             }
-            
-            return modifiedBlocks;
+
+            return responses;
         }
 
-        private IEnumerable<TSBlock> GetModifiedTSBlocks(IEnumerable<TSBlock> tsBlocks, List<IBlock> blocks)
+        /// <summary>
+        /// Return all blocks from table storage that have been modified by comparing them to current blocks from Notion
+        /// </summary>
+        /// <param name="tsBlocks"></param>
+        /// <param name="blocks"></param>
+        private IEnumerable<TSBlock> GetModifiedTableStorageBlocks(IEnumerable<TSBlock> tsBlocks, List<IBlock> blocks)
         {
             List<TSBlock> modifiedBlocks = new List<TSBlock>();
 
@@ -276,25 +296,15 @@ namespace Notion_GoogleDrive_Integrator
             return modifiedBlocks;
         }
 
-        private IEnumerable<IBlock> GetNewBlocks(IEnumerable<TSBlock> tsBlocks, List<IBlock> blocks)
+        /// <summary>
+        /// Return blocks that will be created in google drive
+        /// </summary>
+        /// <param name="tsBlocks"></param>
+        /// <param name="blocks"></param>
+        /// <param name="partitionKey"></param>
+        /// <returns></returns>
+        private IEnumerable<TSBlock> GetNewTableStorageBlocks(IEnumerable<TSBlock> tsBlocks, List<IBlock> blocks, string partitionKey)
         {
-            List<IBlock> modifiedBlocks = new List<IBlock>();
-
-            foreach (var item in blocks)
-            {
-                var modified = tsBlocks.Any(tsb => tsb.BlockId != item.Id);
-                if (modified)
-                {
-                    modifiedBlocks.Add(item);
-                }
-            }
-
-            return modifiedBlocks;
-        }
-
-        private IEnumerable<TSBlock> GetNewTSBlocks(List<TSBlock> tsBlocks, List<IBlock> blocks)
-        {
-            var partitionKey = _configuration.GetValue<string>("storageAccount:blocksTablePartitionKey");
             List<TSBlock> newBlocks = new List<TSBlock>();
 
             if (!tsBlocks.Any() && blocks.Any())
@@ -313,7 +323,7 @@ namespace Notion_GoogleDrive_Integrator
 
             foreach (var item in blocks)
             {
-                var existing = tsBlocks.Find(tsb => tsb.BlockId == item.Id);
+                var existing = tsBlocks.ToList().Find(tsb => tsb.BlockId == item.Id);
                 if (existing == null)
                 {
                     newBlocks.Add(new TSBlock
@@ -327,6 +337,27 @@ namespace Notion_GoogleDrive_Integrator
             }
 
             return newBlocks;
+        }
+
+        /// <summary>
+        /// Method that extracts text from Notion blocks.
+        /// TODO: add more cases: url, header, etc
+        /// </summary>
+        /// <param name="block"></param>
+        /// <returns></returns>
+        public string GetText(IBlock block)
+        {
+            switch (block.Type)
+            {
+                case BlockType.Paragraph:
+                    return ((ParagraphBlock)block)?.Paragraph?.RichText?.FirstOrDefault()?.PlainText ?? "";
+                case BlockType.BulletedListItem:
+                    return $"-{((BulletedListItemBlock)block)?.BulletedListItem?.RichText?.FirstOrDefault()?.PlainText}";
+                case BlockType.NumberedListItem:
+                    return $"-{((NumberedListItemBlock)block)?.NumberedListItem?.RichText?.FirstOrDefault()?.PlainText}";
+                default:
+                    return "";
+            }
         }
     }
 }
