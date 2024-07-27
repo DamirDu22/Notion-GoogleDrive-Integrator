@@ -10,6 +10,10 @@ using static System.Runtime.InteropServices.JavaScript.JSType;
 using Notion_GoogleDrive_Integrator.Entities;
 using Azure.Data.Tables;
 using Google.Apis.Drive.v3.Data;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Azure.Functions.Worker.Http;
+using System.Text.Json;
+using Google.Apis.Sheets.v4;
 
 namespace Notion_GoogleDrive_Integrator
 {
@@ -18,6 +22,7 @@ namespace Notion_GoogleDrive_Integrator
         private readonly ILogger _logger;
         private readonly INotionClient _notionClient;
         private readonly DriveService _googleClient;
+        private SheetsService _sheetsService;
 
         private readonly IConfiguration _configuration;
 
@@ -28,18 +33,72 @@ namespace Notion_GoogleDrive_Integrator
             ILoggerFactory loggerFactory,
             INotionClient notionClient,
             DriveService googleClient,
-            IConfiguration configuration
+            IConfiguration configuration,
+            SheetsService sheetService
             )
         {
             _logger = loggerFactory.CreateLogger<Function1>();
             _notionClient = notionClient;
             _googleClient = googleClient;
             _configuration = configuration;
+            _sheetsService = sheetService;
 
             _tableServiceCleint = new TableServiceClient(_configuration.GetValue<string>("ConnectionStrings:storageAccount"));
             _tableClient = _tableServiceCleint.GetTableClient(
                     tableName: _configuration.GetValue<string>("storageAccount:blockstableName")
             );
+        }
+
+
+
+        [Function("AddUser")]
+        public async Task<IActionResult> AddUser([HttpTrigger(AuthorizationLevel.Function, "post")] HttpRequestData req)
+        {
+            var options = new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            };
+
+            var myclass = await System.Text.Json.JsonSerializer.DeserializeAsync<User>(req.Body, options);
+
+            //var folderID = "1ki8t8oGG7O-wH19gO_1u6zeREkDr_QA5";
+            var sheetID = "1l-JhmQZlIYjNoPlgJgSwlG4L1aOfc2se-P2q9s0EvAc";
+
+            var getRequest = _sheetsService.Spreadsheets.Values.Get(sheetID, "A2:C");
+           
+            try
+            {
+                var res = getRequest.Execute();
+                foreach(var row in res.Values)
+                {
+                    var email = row[2].ToString();
+                    if(myclass.Email == email)
+                    {
+                        return new BadRequestObjectResult("Korisnik vec prijavljen.");
+                    }
+                }
+
+                var requestBody = new Google.Apis.Sheets.v4.Data.ValueRange
+                {
+                    Values = new List<IList<object>>()
+                {
+                    new List<object>() { myclass.Ime, myclass.Prezime, myclass.Email}
+                }
+                };
+
+                var addRequest = _sheetsService.Spreadsheets.Values.Append(requestBody, sheetID, "A2:C");
+                addRequest.ValueInputOption = SpreadsheetsResource.ValuesResource.AppendRequest.ValueInputOptionEnum.USERENTERED;
+                addRequest.Execute();
+
+
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+                Console.WriteLine(ex.StackTrace);
+            }
+            return new OkResult();
+
         }
 
         [Function("GetNotionPage")]
@@ -174,7 +233,7 @@ namespace Notion_GoogleDrive_Integrator
 
             await Task.WhenAll(tasks);
 
-            foreach(var task in tasks)
+            foreach (var task in tasks)
             {
                 if (task.IsCompletedSuccessfully)
                 {
@@ -250,13 +309,13 @@ namespace Notion_GoogleDrive_Integrator
         {
             List<PageDto> blocksToProcess = new List<PageDto>();
 
-            foreach(var block in blocks)
+            foreach (var block in blocks)
             {
                 var existingInTableStorgae = tsBlocks.FirstOrDefault(x => x.BlockId == block.Id);
 
-                if(existingInTableStorgae != null)
+                if (existingInTableStorgae != null)
                 {
-                    if(existingInTableStorgae.EditDate < block.LastEditedTime)
+                    if (existingInTableStorgae.EditDate < block.LastEditedTime)
                     {
                         existingInTableStorgae.EditDate = block.LastEditedTime;
                         blocksToProcess.Add(new PageDto
@@ -310,5 +369,14 @@ namespace Notion_GoogleDrive_Integrator
                     return "";
             }
         }
+
+
+        public class User
+        {
+            public string Email { get; set; }
+            public string Ime { get; set; }
+            public string Prezime { get; set; }
+        }
+
     }
 }
