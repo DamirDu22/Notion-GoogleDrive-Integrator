@@ -95,12 +95,12 @@ namespace Notion_GoogleDrive_Integrator
                 addRequest.ValueInputOption = SpreadsheetsResource.ValuesResource.AppendRequest.ValueInputOptionEnum.USERENTERED;
                 await addRequest.ExecuteAsync();
 
-                await SendEmail();
+                //await SendEmail();
             }
             catch (Exception ex)
             {
-                Console.WriteLine(ex.Message);
-                Console.WriteLine(ex.StackTrace);
+                _logger.LogInformation(ex.Message);
+                _logger.LogInformation(ex.StackTrace);
             }
             return new OkResult();
 
@@ -139,7 +139,7 @@ namespace Notion_GoogleDrive_Integrator
                     Body = "Novi korisnik se prijavio na event.\n\nPogledajte listu na linku https://docs.google.com/spreadsheets/d/1l-JhmQZlIYjNoPlgJgSwlG4L1aOfc2se-P2q9s0EvAc/edit?usp=sharing"
                 })
                 {
-                   await smtp.SendMailAsync(message);
+                   smtp.Send(message);
                 }
             }
             
