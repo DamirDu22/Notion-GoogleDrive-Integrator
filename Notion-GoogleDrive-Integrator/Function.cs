@@ -14,6 +14,8 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker.Http;
 using System.Text.Json;
 using Google.Apis.Sheets.v4;
+using System.Net.Mail;
+using System.Net;
 
 namespace Notion_GoogleDrive_Integrator
 {
@@ -68,29 +70,32 @@ namespace Notion_GoogleDrive_Integrator
            
             try
             {
-                var res = getRequest.Execute();
-                foreach(var row in res.Values)
+                var res = await getRequest.ExecuteAsync();
+                if(res.Values != null)
                 {
-                    var email = row[2].ToString();
-                    if(myclass.Email == email)
+                    foreach (var row in res.Values)
                     {
-                        return new BadRequestObjectResult("Korisnik vec prijavljen.");
+                        var email = row[2].ToString();
+                        if (myclass.Email == email)
+                        {
+                            return new BadRequestObjectResult("Korisnik vec prijavljen.");
+                        }
                     }
                 }
-
+                
                 var requestBody = new Google.Apis.Sheets.v4.Data.ValueRange
                 {
                     Values = new List<IList<object>>()
-                {
-                    new List<object>() { myclass.Ime, myclass.Prezime, myclass.Email}
-                }
+                    {
+                        new List<object>() { myclass.Ime, myclass.Prezime, myclass.Email}
+                    }
                 };
 
                 var addRequest = _sheetsService.Spreadsheets.Values.Append(requestBody, sheetID, "A2:C");
                 addRequest.ValueInputOption = SpreadsheetsResource.ValuesResource.AppendRequest.ValueInputOptionEnum.USERENTERED;
-                addRequest.Execute();
+                await addRequest.ExecuteAsync();
 
-
+                await SendEmail();
             }
             catch (Exception ex)
             {
@@ -100,6 +105,46 @@ namespace Notion_GoogleDrive_Integrator
             return new OkResult();
 
         }
+
+        private async Task SendEmail()
+        {
+            var name = _configuration.GetValue<string>("storageAccount:emailTableName");
+
+            var tableClient = _tableServiceCleint.GetTableClient(
+                    tableName: name
+            );
+
+            var PartitionKey = _configuration.GetValue<string>("storageAccount:emailTablePartitionKey");
+            var tableStorageEmails = tableClient.Query<TSEmail>(x => x.PartitionKey == PartitionKey);
+
+            var smtp = new SmtpClient
+            {
+                Host = "smtp.office365.com",
+                Port = 587,
+                EnableSsl = true,
+                DeliveryMethod = SmtpDeliveryMethod.Network,
+                UseDefaultCredentials = false,
+                Credentials = new NetworkCredential("blade6785@outlook.com", "zonfazonfa!23")
+            };
+
+            var fromAddress = new MailAddress("blade6785@outlook.com", "No-Reply");
+            
+            foreach(var row in tableStorageEmails)
+            {
+                var toAddress = new MailAddress(row.Email);
+
+                using (var message = new MailMessage(fromAddress, toAddress)
+                {
+                    Subject = "Nova prijava",
+                    Body = "Novi korisnik se prijavio na event.\n\nPogledajte listu na linku https://docs.google.com/spreadsheets/d/1l-JhmQZlIYjNoPlgJgSwlG4L1aOfc2se-P2q9s0EvAc/edit?usp=sharing"
+                })
+                {
+                   await smtp.SendMailAsync(message);
+                }
+            }
+            
+        }
+
 
         [Function("GetNotionPage")]
         public async Task Run([TimerTrigger("0 0 0/24 * * *")] TimerInfo myTimer)
