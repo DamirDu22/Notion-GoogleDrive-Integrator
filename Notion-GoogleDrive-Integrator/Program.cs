@@ -2,6 +2,7 @@ using Azure.Storage.Files.Shares;
 using Google.Apis.Auth.OAuth2;
 using Google.Apis.Drive.v3;
 using Google.Apis.Services;
+using Google.Apis.Sheets.v4;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -16,7 +17,6 @@ var hostBuilder = new HostBuilder()
     {
         services.AddApplicationInsightsTelemetryWorkerService();
         services.ConfigureFunctionsApplicationInsights();
-        services.AddMemoryCache();
     });
     //.ConfigureAppConfiguration(configuration =>
     //{
@@ -56,6 +56,7 @@ hostBuilder.ConfigureServices((context, services) =>
 
     string[] Scopes = { DriveService.Scope.Drive };
     string ApplicationName = "NotionGoogleDriveIntegrator";
+
     GoogleCredential credential;
     //GetApplicationDefault will look for GOOGLE_APPLICATION_CREDENTIALS set in launchSettings.json
     using (Stream stream = fil.Value.Content)
@@ -64,6 +65,13 @@ hostBuilder.ConfigureServices((context, services) =>
     }
 
     services.AddSingleton(x => new DriveService(new BaseClientService.Initializer()
+    {
+        HttpClientInitializer = credential,
+        ApplicationName = ApplicationName,
+
+    }));
+
+    services.AddSingleton(x => new SheetsService(new BaseClientService.Initializer()
     {
         HttpClientInitializer = credential,
         ApplicationName = ApplicationName,

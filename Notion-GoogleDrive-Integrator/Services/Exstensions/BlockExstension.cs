@@ -11,19 +11,19 @@ namespace Notion_GoogleDrive_Integrator.Services.Exstensions
 {
     public static class BlockExstension
     {
-        public static string GetText(this IBlock block)
-        {
-            switch (block.Type)
-            {
-                case BlockType.Paragraph:
-                    return ((ParagraphBlock)block)?.Paragraph?.RichText?.FirstOrDefault()?.PlainText ?? "";
-                case BlockType.BulletedListItem:
-                    return $"-{((BulletedListItemBlock)block)?.BulletedListItem?.RichText?.FirstOrDefault()?.PlainText}";
-                case BlockType.NumberedListItem:
-                    return $"-{((NumberedListItemBlock)block)?.NumberedListItem?.RichText?.FirstOrDefault()?.PlainText}";
-                default:
-                    return "";
-            }
-        }
+        //public static string GetText(this IBlock block)
+        //{
+        //    switch (block.Type)
+        //    {
+        //        case BlockType.Paragraph:
+        //            return ((ParagraphBlock)block)?.Paragraph?.RichText?.FirstOrDefault()?.PlainText ?? "";
+        //        case BlockType.BulletedListItem:
+        //            return $"-{((BulletedListItemBlock)block)?.BulletedListItem?.RichText?.FirstOrDefault()?.PlainText}";
+        //        case BlockType.NumberedListItem:
+        //            return $"-{((NumberedListItemBlock)block)?.NumberedListItem?.RichText?.FirstOrDefault()?.PlainText}";
+        //        default:
+        //            return "";
+        //    }
+        //}
     }
 }
